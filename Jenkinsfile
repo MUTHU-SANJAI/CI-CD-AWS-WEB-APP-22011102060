@@ -4,7 +4,7 @@ pipeline {
     environment {
         AWS_ACCOUNT_ID = '474623670821'
         AWS_REGION = 'eu-north-1'
-        ECR_REPO = 'node-cicd-repo' // change to your actual repo name
+        ECR_REPO = 'node-cicd-repo'
         IMAGE_TAG = "latest"
     }
 
@@ -27,6 +27,12 @@ pipeline {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     bat '''
+                        set AWS_ACCESS_KEY_ID=%AWS_ACCESS_KEY_ID%
+                        set AWS_SECRET_ACCESS_KEY=%AWS_SECRET_ACCESS_KEY%
+                        set AWS_DEFAULT_REGION=%AWS_REGION%
+
+                        aws sts get-caller-identity
+
                         aws ecr get-login-password --region %AWS_REGION% ^
                         | docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
                     '''
