@@ -39,8 +39,9 @@ pipeline {
                         set AWS_ACCESS_KEY_ID=%AWS_ACCESS_KEY_ID%
                         set AWS_SECRET_ACCESS_KEY=%AWS_SECRET_ACCESS_KEY%
                         set AWS_DEFAULT_REGION=%AWS_REGION%
-                        
+
                         aws sts get-caller-identity
+
                         aws ecr get-login-password --region %AWS_REGION% ^
                         | docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
                     '''
@@ -48,11 +49,11 @@ pipeline {
             }
         }
 
-        stage('Tag & Push Image to ECR') {
+        stage('Push Docker Image to ECR') {
             steps {
                 bat '''
                     echo ===========================
-                    echo Tagging and Pushing Docker Image to ECR
+                    echo Tagging and Pushing Image
                     echo ===========================
                     docker tag %ECR_REPO%:%IMAGE_TAG% %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
                     docker push %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
@@ -60,34 +61,32 @@ pipeline {
             }
         }
 
-        stage('Deploy on EC2 Instance') {
+        stage('Deploy to EC2 Instance') {
             steps {
                 bat '''
                     echo ===========================
                     echo Deploying on EC2 Instance
                     echo ===========================
 
-                    rem --- Create deployment script dynamically ---
-                    echo echo "🚀 Logging into ECR..." > deploy-commands.sh
-                    echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com >> deploy-commands.sh
+                    rem --- Create deploy script locally ---
+                    (
+                        echo echo "🔐 Logging into ECR..."
+                        echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
+                        echo echo "🛑 Stopping existing container (if running)..."
+                        echo docker stop nodeapp ^|^| true
+                        echo docker rm nodeapp ^|^| true
+                        echo echo "📦 Pulling latest image..."
+                        echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
+                        echo echo "🚀 Running new container..."
+                        echo docker run -d --name nodeapp -p 3000:3000 %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
+                        echo echo "✅ Deployment Completed Successfully!"
+                    ) > deploy-commands.sh
 
-                    echo echo "🛑 Stopping old containers on port 3000..." >> deploy-commands.sh
-                    echo docker stop $(docker ps -q --filter "publish=3000") ^|^| true >> deploy-commands.sh
-                    echo docker rm $(docker ps -aq --filter "publish=3000") ^|^| true >> deploy-commands.sh
-
-                    echo echo "📦 Pulling latest image..." >> deploy-commands.sh
-                    echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG% >> deploy-commands.sh
-
-                    echo echo "🚀 Running new container..." >> deploy-commands.sh
-                    echo docker run -d --name nodeapp -p 3000:3000 %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG% >> deploy-commands.sh
-
-                    echo echo "✅ Deployment Completed Successfully!" >> deploy-commands.sh
-
-                    rem --- Transfer deployment script to EC2 ---
+                    rem --- Transfer deploy script to EC2 ---
                     pscp -i "%PPK_PATH%" -batch deploy-commands.sh %EC2_USER%@%EC2_HOST%:/home/%EC2_USER%/deploy-commands.sh
 
-                    rem --- Execute deployment script remotely ---
-                    plink -i "%PPK_PATH%" -batch -ssh %EC2_USER%@%EC2_HOST% "chmod +x deploy-commands.sh && ./deploy-commands.sh"
+                    rem --- Run script remotely on EC2 ---
+                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "chmod +x deploy-commands.sh && dos2unix deploy-commands.sh && ./deploy-commands.sh"
                 '''
             }
         }
@@ -95,10 +94,10 @@ pipeline {
 
     post {
         success {
-            echo '✅ Pipeline completed successfully and deployed latest changes!'
+            echo '✅ Pipeline completed successfully and deployed to EC2!'
         }
         failure {
-            echo '❌ Pipeline failed. Please check Jenkins logs.'
+            echo '❌ Pipeline failed. Please check logs for details.'
         }
     }
 }
