@@ -29,12 +29,12 @@ pipeline {
             }
         }
 
-        stage('Login to ECR') {
+        stage('Login to AWS ECR') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     bat '''
                         echo ===========================
-                        echo Logging in to AWS ECR
+                        echo Logging into AWS ECR
                         echo ===========================
                         set AWS_ACCESS_KEY_ID=%AWS_ACCESS_KEY_ID%
                         set AWS_SECRET_ACCESS_KEY=%AWS_SECRET_ACCESS_KEY%
@@ -49,11 +49,11 @@ pipeline {
             }
         }
 
-        stage('Tag & Push to ECR') {
+        stage('Push Docker Image to ECR') {
             steps {
                 bat '''
                     echo ===========================
-                    echo Tagging and Pushing to ECR
+                    echo Tagging and Pushing Image
                     echo ===========================
                     docker tag %ECR_REPO%:%IMAGE_TAG% %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
                     docker push %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
@@ -61,7 +61,7 @@ pipeline {
             }
         }
 
-        stage('Deploy to EC2') {
+        stage('Deploy to EC2 Instance') {
             steps {
                 bat '''
                     echo ===========================
@@ -69,19 +69,24 @@ pipeline {
                     echo ===========================
 
                     rem --- Create deploy script locally ---
-                    echo echo "Logging into ECR..." > deploy-commands.sh
-                    echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com >> deploy-commands.sh
-                    echo docker stop nodeapp ^|^| true >> deploy-commands.sh
-                    echo docker rm nodeapp ^|^| true >> deploy-commands.sh
-                    echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest >> deploy-commands.sh
-                    echo docker run -d --name nodeapp -p 3000:3000 %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest >> deploy-commands.sh
-                    echo echo "✅ Deployment Completed Successfully!" >> deploy-commands.sh
+                    (
+                        echo echo "🔐 Logging into ECR..."
+                        echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
+                        echo echo "🛑 Stopping existing container (if running)..."
+                        echo docker stop nodeapp ^|^| true
+                        echo docker rm nodeapp ^|^| true
+                        echo echo "📦 Pulling latest image..."
+                        echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
+                        echo echo "🚀 Running new container..."
+                        echo docker run -d --name nodeapp -p 3000:3000 %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
+                        echo echo "✅ Deployment Completed Successfully!"
+                    ) > deploy-commands.sh
 
                     rem --- Transfer deploy script to EC2 ---
                     pscp -i "%PPK_PATH%" -batch deploy-commands.sh %EC2_USER%@%EC2_HOST%:/home/%EC2_USER%/deploy-commands.sh
 
                     rem --- Run script remotely on EC2 ---
-                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "dos2unix deploy-commands.sh && chmod +x deploy-commands.sh && ./deploy-commands.sh"
+                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "chmod +x deploy-commands.sh && dos2unix deploy-commands.sh && ./deploy-commands.sh"
                 '''
             }
         }
@@ -89,10 +94,10 @@ pipeline {
 
     post {
         success {
-            echo '✅ Pipeline completed successfully!'
+            echo '✅ Pipeline completed successfully and deployed to EC2!'
         }
         failure {
-            echo '❌ Pipeline failed. Check logs for errors.'
+            echo '❌ Pipeline failed. Please check logs for details.'
         }
     }
 }
