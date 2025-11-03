@@ -96,40 +96,27 @@ pipeline {
     post {
         success {
             echo '✅ Pipeline completed successfully and deployed to EC2!'
-
-            // Optional: Send SNS notification on success
             withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                 bat '''
                     aws sns publish ^
                         --topic-arn %SNS_TOPIC_ARN% ^
                         --subject "✅ Jenkins Pipeline Succeeded" ^
-                        --message "The CI/CD pipeline completed successfully and deployed the app to EC2."
+                        --message "The CI/CD pipeline completed successfully and was deployed to EC2." ^
+                        --region %AWS_REGION%
                 '''
             }
-
-            // Optional: Jenkins email notification (requires email plugin configured)
-            mail to: 'your@email.com',
-                 subject: '✅ Jenkins Pipeline Success',
-                 body: 'The CI/CD pipeline executed successfully and deployment is complete.'
         }
-
         failure {
             echo '❌ Pipeline failed. Please check logs for details.'
-
-            // Optional: Send SNS notification on failure
             withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                 bat '''
                     aws sns publish ^
                         --topic-arn %SNS_TOPIC_ARN% ^
                         --subject "❌ Jenkins Pipeline Failed" ^
-                        --message "The CI/CD pipeline failed. Please check Jenkins logs for details."
+                        --message "The CI/CD pipeline failed. Please check Jenkins logs for details." ^
+                        --region %AWS_REGION%
                 '''
             }
-
-            // Optional: Jenkins email notification
-            mail to: 'your@email.com',
-                 subject: '❌ Jenkins Pipeline Failed',
-                 body: 'The CI/CD pipeline failed. Check the Jenkins console output for more details.'
         }
     }
 }
