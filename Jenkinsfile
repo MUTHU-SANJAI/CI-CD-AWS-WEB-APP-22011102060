@@ -3,17 +3,14 @@ pipeline {
 
     environment {
         AWS_REGION = 'eu-north-1'
-        ACCOUNT_ID = '474623670821'
-        ECR_REPO = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/node-app"
-        IMAGE_TAG = "node-app:${env.BUILD_ID}"
+        ECR_REPO = '474623670821.dkr.ecr.eu-north-1.amazonaws.com/node-app'
+        IMAGE_TAG = "${BUILD_ID}"
         EC2_HOST = '13.49.76.248'
     }
 
     stages {
-
         stage('Checkout SCM') {
             steps {
-                echo 'Checking out code from SCM...'
                 checkout scm
             }
         }
@@ -21,60 +18,48 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 bat '''
-                echo Building Docker image...
-                docker build -t %IMAGE_TAG% .
+                    docker build -t %ECR_REPO%:%IMAGE_TAG% .
                 '''
             }
         }
 
         stage('Login to ECR') {
             steps {
-                bat '''
-                echo Logging in to AWS ECR...
-                for /f "delims=" %%i in ('aws ecr get-login-password --region %AWS_REGION%') do (
-                    echo %%i | docker login --username AWS --password-stdin %ECR_REPO%
-                )
-                '''
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+                    bat '''
+                        aws ecr get-login-password --region %AWS_REGION% ^
+                        | docker login --username AWS --password-stdin 474623670821.dkr.ecr.eu-north-1.amazonaws.com
+                    '''
+                }
             }
         }
 
         stage('Push Image to ECR') {
             steps {
                 bat '''
-                echo Tagging and pushing Docker image to ECR...
-                docker tag %IMAGE_TAG% %ECR_REPO%:%BUILD_ID%
-                docker push %ECR_REPO%:%BUILD_ID%
+                    docker push %ECR_REPO%:%IMAGE_TAG%
                 '''
             }
         }
 
         stage('Deploy to EC2') {
             steps {
-                bat '''
-                echo Deploying container to EC2 instance %EC2_HOST%...
-                echo Pulling latest image and restarting container...
-
-                REM Replace "ec2-user" if your AMI uses a different default user (e.g. ubuntu)
-                ssh -o StrictHostKeyChecking=no ec2-user@%EC2_HOST% ^
-                    "docker pull %ECR_REPO%:%BUILD_ID% && ^
-                     docker stop node-app || true && ^
-                     docker rm node-app || true && ^
-                     docker run -d -p 3000:3000 --name node-app %ECR_REPO%:%BUILD_ID%"
-                '''
+                sshagent(['ec2-ssh-key']) {
+                    bat '''
+                        ssh -o StrictHostKeyChecking=no ec2-user@13.49.76.248 ^
+                        "docker pull 474623670821.dkr.ecr.eu-north-1.amazonaws.com/node-app:%BUILD_ID% && ^
+                         docker stop node-cicd-container || true && ^
+                         docker rm node-cicd-container || true && ^
+                         docker run -d -p 3000:3000 --name node-cicd-container 474623670821.dkr.ecr.eu-north-1.amazonaws.com/node-app:%BUILD_ID%"
+                    '''
+                }
             }
         }
     }
 
     post {
         always {
-            echo 'Cleaning up workspace...'
-            cleanWs()
-        }
-        success {
-            echo '✅ Deployment successful!'
-        }
-        failure {
-            echo '❌ Deployment failed. Check Jenkins logs for details.'
+            echo 'Pipeline execution complete.'
         }
     }
 }
