@@ -5,7 +5,8 @@ pipeline {
         AWS_ACCOUNT_ID = '474623670821'
         AWS_REGION = 'eu-north-1'
         ECR_REPO = 'node-cicd-repo'
-        IMAGE_TAG = "latest"
+        IMAGE_TAG = 'latest'
+        EC2_USER = 'ec2-user'
         EC2_HOST = '13.49.76.248'
     }
 
@@ -50,14 +51,38 @@ pipeline {
 
         stage('Deploy to EC2') {
             steps {
-                sshagent(['ec2-ssh-key']) {
-                    bat '''
-                        ssh -o StrictHostKeyChecking=no ec2-user@%EC2_HOST% ^
-                        "aws ecr get-login-password --region %AWS_REGION% | docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com && ^
-                         docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG% && ^
-                         docker stop nodeapp || exit 0 && docker rm nodeapp || exit 0 && ^
-                         docker run -d -p 80:3000 --name nodeapp %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%"
-                    '''
+                script {
+                    def remoteScript = """
+set -e
+echo "Logging into ECR on EC2..."
+aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+echo "Pulling latest image..."
+docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG} || true
+
+echo "Stopping old container..."
+docker stop nodeapp || true
+docker rm nodeapp || true
+
+echo "Cleaning unused Docker data..."
+docker system prune -af --volumes || true
+
+echo "Starting new container..."
+docker run -d -p 80:3000 --name nodeapp ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+
+echo "✅ Deployment complete."
+"""
+
+                    withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY')]) {
+                        // Send the script to EC2 and execute
+                        bat """
+                            echo Running deployment on EC2...
+                            type NUL > temp_script.sh
+                            echo ${remoteScript.replace("\n", "\r\n")} > temp_script.sh
+                            ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %EC2_USER%@%EC2_HOST% "bash -s" < temp_script.sh
+                            del temp_script.sh
+                        """
+                    }
                 }
             }
         }
