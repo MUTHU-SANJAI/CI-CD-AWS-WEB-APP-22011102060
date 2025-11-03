@@ -68,13 +68,14 @@ pipeline {
                     echo Deploying on EC2 Instance
                     echo ===========================
 
-                    rem --- Create deploy script locally ---
                     (
                         echo echo "🔐 Logging into ECR..."
                         echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
                         echo echo "🛑 Stopping existing container (if running)..."
                         echo docker stop nodeapp ^|^| true
                         echo docker rm nodeapp ^|^| true
+                        echo echo "🧹 Cleaning old images..."
+                        echo docker image prune -af
                         echo echo "📦 Pulling latest image..."
                         echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
                         echo echo "🚀 Running new container..."
@@ -85,8 +86,8 @@ pipeline {
                     rem --- Transfer deploy script to EC2 ---
                     pscp -i "%PPK_PATH%" -batch deploy-commands.sh %EC2_USER%@%EC2_HOST%:/home/%EC2_USER%/deploy-commands.sh
 
-                    rem --- Run script remotely on EC2 ---
-                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "chmod +x deploy-commands.sh && dos2unix deploy-commands.sh && ./deploy-commands.sh"
+                    rem --- Run script remotely on EC2 (non-blocking) ---
+                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "nohup bash deploy-commands.sh > deploy.log 2>&1 &"
                 '''
             }
         }
