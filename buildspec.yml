@@ -1,0 +1,19 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 474623670821.dkr.ecr.eu-north-1.amazonaws.com
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t node-cicd-repo .
+      - docker tag node-cicd-repo:latest 474623670821.dkr.ecr.eu-north-1.amazonaws.com/node-cicd-repo:latest
+  post_build:
+    commands:
+      - echo Pushing the Docker image to ECR...
+      - docker push 474623670821.dkr.ecr.eu-north-1.amazonaws.com/node-cicd-repo:latest
+artifacts:
+  files:
+    - '**/*'
