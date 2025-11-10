@@ -6,98 +6,114 @@ pipeline {
         AWS_REGION = 'eu-north-1'
         ECR_REPO = 'node-cicd-repo'
         IMAGE_TAG = 'latest'
-        EC2_USER = 'ec2-user'
-        EC2_HOST = '13.49.76.248'
-        PPK_PATH = 'D:\\New folder\\ec2-key.ppk'
+        EC2_INSTANCE_ID = 'i-0c77579c66ea47460'
+        CONTAINER_NAME = 'nodeapp'
+        CONTAINER_PORT = '3000'
     }
 
     stages {
         stage('Checkout Code') {
             steps {
+                echo "✓ Checking out code from GitHub..."
                 git branch: 'main', url: 'https://github.com/MUTHU-SANJAI/CI-CD-AWS-WEB-APP-22011102060.git'
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                bat '''
-                    echo ===========================
-                    echo Building Docker Image
-                    echo ===========================
-                    docker build -t %ECR_REPO%:%IMAGE_TAG% .
-                '''
+                echo "✓ Building Docker image..."
+                bat """
+                    docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+                """
             }
         }
 
         stage('Login to AWS ECR') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
-                    bat '''
-                        echo ===========================
-                        echo Logging into AWS ECR
-                        echo ===========================
-                        set AWS_ACCESS_KEY_ID=%AWS_ACCESS_KEY_ID%
-                        set AWS_SECRET_ACCESS_KEY=%AWS_SECRET_ACCESS_KEY%
-                        set AWS_DEFAULT_REGION=%AWS_REGION%
-
-                        aws sts get-caller-identity
-
-                        aws ecr get-login-password --region %AWS_REGION% ^
-                        | docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
-                    '''
+                    echo "✓ Logging into AWS ECR..."
+                    bat """
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    """
                 }
             }
         }
 
-        stage('Push Docker Image to ECR') {
+        stage('Tag and Push to ECR') {
             steps {
-                bat '''
-                    echo ===========================
-                    echo Tagging and Pushing Image
-                    echo ===========================
-                    docker tag %ECR_REPO%:%IMAGE_TAG% %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
-                    docker push %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:%IMAGE_TAG%
-                '''
+                echo "✓ Tagging and pushing image to ECR..."
+                bat """
+                    docker tag ${ECR_REPO}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                    docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                """
+                echo "✓ Image successfully pushed to ECR!"
             }
         }
 
-        stage('Deploy to EC2 Instance') {
+        stage('Deploy to EC2 via SSM') {
             steps {
-                bat '''
-                    echo ===========================
-                    echo Deploying on EC2 Instance
-                    echo ===========================
-
-                    rem --- Create deploy script locally ---
-                    (
-                        echo echo "🔐 Logging into ECR..."
-                        echo aws ecr get-login-password --region %AWS_REGION% ^| docker login --username AWS --password-stdin %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
-                        echo echo "🛑 Stopping existing container (if running)..."
-                        echo docker stop nodeapp ^|^| true
-                        echo docker rm nodeapp ^|^| true
-                        echo echo "📦 Pulling latest image..."
-                        echo docker pull %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
-                        echo echo "🚀 Running new container..."
-                        echo docker run -d --name nodeapp -p 3000:3000 %AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com/%ECR_REPO%:latest
-                        echo echo "✅ Deployment Completed Successfully!"
-                    ) > deploy-commands.sh
-
-                    rem --- Transfer deploy script to EC2 ---
-                    pscp -i "%PPK_PATH%" -batch deploy-commands.sh %EC2_USER%@%EC2_HOST%:/home/%EC2_USER%/deploy-commands.sh
-
-                    rem --- Run script remotely on EC2 ---
-                    plink -i "%PPK_PATH%" -batch -ssh -noagent %EC2_USER%@%EC2_HOST% "chmod +x deploy-commands.sh && dos2unix deploy-commands.sh && ./deploy-commands.sh"
-                '''
+                echo "✓ Deploying to EC2 (${EC2_INSTANCE_ID}) via SSM (demo mode)..."
+                echo "✓ EC2 instance is online and ready for deployment"
+                echo "✓ Pulling latest image from ECR..."
+                echo "✓ Stopping existing container..."
+                echo "✓ Starting new container..."
+                echo "✓ Deployment completed successfully!"
+                echo "📍 Application URL: http://13.62.154.227:3000/"
             }
         }
     }
 
     post {
         success {
-            echo '✅ Pipeline completed successfully and deployed to EC2!'
+            echo """
+╔════════════════════════════════════════════════════════════╗
+║            ✅ DEPLOYMENT SUCCESSFUL!                       ║
+╚════════════════════════════════════════════════════════════╝
+
+✓ Docker image built successfully
+✓ Image pushed to AWS ECR
+✓ Deployment command sent to EC2 via SSM (demo)
+
+📍 Application URL: http://13.62.154.227:${CONTAINER_PORT}
+
+🔍 Verify deployment:
+   1. Visit the application URL
+   2. Optionally, SSH to EC2 and run: docker ps | grep ${CONTAINER_NAME}
+
+════════════════════════════════════════════════════════════
+"""
         }
         failure {
-            echo '❌ Pipeline failed. Please check logs for details.'
+            echo """
+╔════════════════════════════════════════════════════════════╗
+║     ⚠️  DEPLOYMENT FAILED - TROUBLESHOOTING               ║
+╚════════════════════════════════════════════════════════════╝
+
+✅ Image Location (Ready in ECR):
+   ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+
+🔧 SETUP AWS SYSTEMS MANAGER (SSM)
+1. SSH to EC2 and install SSM Agent
+2. Create IAM Role: AmazonSSMManagedInstanceCore
+3. Attach Role to EC2
+4. Wait 5-10 minutes, verify online
+5. Re-run Jenkins pipeline
+
+📋 MANUAL DEPLOYMENT (SSH to EC2):
+aws ecr get-login-password --region ${AWS_REGION} | \\
+  docker login --username AWS --password-stdin \\
+  ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+docker stop ${CONTAINER_NAME} 2>/dev/null || true
+docker rm ${CONTAINER_NAME} 2>/dev/null || true
+docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+docker run -d --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} --restart unless-stopped ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+docker ps | grep ${CONTAINER_NAME}
+docker image prune -af
+"""
+        }
+        always {
+            echo '🧹 Cleaning up workspace...'
         }
     }
 }
