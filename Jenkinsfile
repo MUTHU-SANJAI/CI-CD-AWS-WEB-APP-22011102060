@@ -6,9 +6,7 @@ pipeline {
         AWS_REGION = 'eu-north-1'
         ECR_REPO = 'node-cicd-repo'
         IMAGE_TAG = 'latest'
-        EC2_USER = 'ec2-user'
-        EC2_HOST = '13.49.76.248'
-        PPK_PATH = 'D:\\New folder\\ec2-key.ppk'
+        EC2_INSTANCE_ID = 'i-0c77579c66ea47460'
         CONTAINER_NAME = 'nodeapp'
         CONTAINER_PORT = '3000'
     }
@@ -52,58 +50,35 @@ pipeline {
             }
         }
 
-        stage('Get Jenkins IP for Troubleshooting') {
+        stage('Deploy to EC2 via SSM') {
             steps {
                 script {
-                    echo "Getting Jenkins server IP addresses..."
-                    bat """
-                        @echo off
-                        echo ========================================
-                        echo Jenkins Server IP Information:
-                        echo ========================================
-                        echo.
-                        echo IPv4 Address:
-                        curl -4 -s ifconfig.me 2>nul || echo "IPv4 not available"
-                        echo.
-                        echo.
-                        echo IPv6 Address:
-                        curl -6 -s ifconfig.me 2>nul || echo "IPv6 not available"
-                        echo.
-                        echo ========================================
-                    """
-                }
-            }
-        }
-
-        stage('Deploy via AWS SSM') {
-            steps {
-                script {
-                    echo "Attempting deployment via AWS Systems Manager..."
-                    
-                    try {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
-                            // Find EC2 instance ID
-                            def instanceId = bat(
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
+                        echo "Deploying to EC2 (${EC2_INSTANCE_ID}) via AWS Systems Manager..."
+                        
+                        try {
+                            // Check if instance is registered with SSM
+                            def ssmStatus = bat(
                                 script: """
                                     @echo off
-                                    aws ec2 describe-instances --region ${AWS_REGION} --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text 2>nul
+                                    aws ssm describe-instance-information --region ${AWS_REGION} --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" --query "InstanceInformationList[0].PingStatus" --output text 2>nul
                                 """,
                                 returnStdout: true
                             ).trim()
 
-                            if (instanceId && !instanceId.contains('None') && instanceId.startsWith('i-')) {
-                                echo "✓ Found EC2 Instance: ${instanceId}"
+                            if (ssmStatus == "Online") {
+                                echo "✓ EC2 instance is online and ready for SSM commands"
                                 
-                                // Send deployment command via SSM
+                                // Send deployment command
                                 def commandId = bat(
                                     script: """
                                         @echo off
                                         aws ssm send-command ^
                                             --region ${AWS_REGION} ^
-                                            --instance-ids ${instanceId} ^
+                                            --instance-ids ${EC2_INSTANCE_ID} ^
                                             --document-name "AWS-RunShellScript" ^
-                                            --comment "Deploy from Jenkins CI/CD" ^
-                                            --parameters "commands=['aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com','docker stop ${CONTAINER_NAME} 2>/dev/null || true','docker rm ${CONTAINER_NAME} 2>/dev/null || true','docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}','docker run -d --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} --restart unless-stopped ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}','sleep 5','docker ps | grep ${CONTAINER_NAME}','docker image prune -af']" ^
+                                            --comment "Jenkins CI/CD Deployment" ^
+                                            --parameters "commands=['#!/bin/bash','set -e','echo \"Starting deployment...\"','aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com','echo \"Stopping existing container...\"','docker stop ${CONTAINER_NAME} 2>/dev/null || true','docker rm ${CONTAINER_NAME} 2>/dev/null || true','echo \"Pulling latest image...\"','docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}','echo \"Starting new container...\"','docker run -d --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} --restart unless-stopped ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}','echo \"Verifying deployment...\"','sleep 5','docker ps | grep ${CONTAINER_NAME}','echo \"Cleaning up old images...\"','docker image prune -af','echo \"Deployment completed successfully!\"']" ^
                                             --query "Command.CommandId" ^
                                             --output text
                                     """,
@@ -112,15 +87,16 @@ pipeline {
 
                                 echo "✓ SSM Command ID: ${commandId}"
                                 echo "✓ Deployment command sent successfully!"
-                                echo "Check AWS Console → Systems Manager → Run Command for status"
+                                echo ""
+                                echo "Monitor deployment: https://console.aws.amazon.com/systems-manager/run-command/${commandId}?region=${AWS_REGION}"
                                 
                             } else {
-                                error "EC2 instance not found or not running"
+                                error "EC2 instance is not registered with SSM or is offline. Status: ${ssmStatus}"
                             }
+                        } catch (Exception e) {
+                            echo "⚠ SSM deployment failed: ${e.message}"
+                            error "See post-build instructions for manual deployment or SSM setup"
                         }
-                    } catch (Exception e) {
-                        echo "⚠ SSM deployment failed: ${e.message}"
-                        error "Deployment failed - see manual instructions below"
                     }
                 }
             }
@@ -136,110 +112,87 @@ pipeline {
 
 ✓ Docker image built successfully
 ✓ Image pushed to AWS ECR
-✓ Deployment executed via AWS Systems Manager
+✓ Deployment command sent to EC2 via SSM
 
-📍 Application URL: http://${EC2_HOST}:${CONTAINER_PORT}
+📍 Application URL: http://13.49.76.248:${CONTAINER_PORT}
 
 🔍 Verify deployment:
-   - Check AWS Systems Manager → Run Command
-   - Or SSH to EC2 and run: docker ps | grep ${CONTAINER_NAME}
+   1. Check SSM Run Command in AWS Console
+   2. SSH to EC2 and run: docker ps | grep ${CONTAINER_NAME}
+   3. Test app: curl http://localhost:${CONTAINER_PORT}
 
 ════════════════════════════════════════════════════════════
 """
         }
-        
         failure {
-            script {
-                // Get Jenkins IP for troubleshooting
-                def ipv4 = bat(
-                    script: '@curl -4 -s ifconfig.me 2>nul',
-                    returnStdout: true
-                ).trim()
-
-                echo """
+            echo """
 ╔════════════════════════════════════════════════════════════╗
-║     ⚠️  AUTOMATIC DEPLOYMENT FAILED - MANUAL STEPS         ║
+║     ⚠️  DEPLOYMENT FAILED - TROUBLESHOOTING               ║
 ╚════════════════════════════════════════════════════════════╝
 
-✅ Image Location (Ready to Deploy):
+✅ Image Location (Ready in ECR):
    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 
 ════════════════════════════════════════════════════════════
-📋 MANUAL DEPLOYMENT - SSH to EC2 and run:
+🔧 SETUP AWS SYSTEMS MANAGER (SSM)
 ════════════════════════════════════════════════════════════
 
-# Login to ECR
+If SSM is not set up, follow these steps:
+
+STEP 1: SSH to EC2 and install SSM Agent
+────────────────────────────────────────────────────────────
+sudo yum install -y amazon-ssm-agent
+sudo systemctl enable amazon-ssm-agent
+sudo systemctl start amazon-ssm-agent
+sudo systemctl status amazon-ssm-agent
+
+STEP 2: Create IAM Role (in AWS Console)
+────────────────────────────────────────────────────────────
+1. Go to IAM → Roles → Create Role
+2. Select: AWS Service → EC2
+3. Attach policy: AmazonSSMManagedInstanceCore
+4. Name: EC2-SSM-Role
+5. Create Role
+
+STEP 3: Attach Role to EC2
+────────────────────────────────────────────────────────────
+1. EC2 Console → Instances → Select ${EC2_INSTANCE_ID}
+2. Actions → Security → Modify IAM Role
+3. Select: EC2-SSM-Role
+4. Update IAM Role
+
+STEP 4: Wait & Verify
+────────────────────────────────────────────────────────────
+1. Wait 5-10 minutes for registration
+2. Check: Systems Manager → Fleet Manager
+3. Your instance should show as "Online"
+4. Re-run Jenkins pipeline
+
+════════════════════════════════════════════════════════════
+📋 MANUAL DEPLOYMENT (SSH to EC2 and run):
+════════════════════════════════════════════════════════════
+
 aws ecr get-login-password --region ${AWS_REGION} | \\
   docker login --username AWS --password-stdin \\
   ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-# Stop old container
 docker stop ${CONTAINER_NAME} 2>/dev/null || true
 docker rm ${CONTAINER_NAME} 2>/dev/null || true
 
-# Pull and run new image
 docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+
 docker run -d --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} \\
   --restart unless-stopped \\
   ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 
-# Verify
 docker ps | grep ${CONTAINER_NAME}
-curl http://localhost:${CONTAINER_PORT}
-
-# Cleanup
 docker image prune -af
 
 ════════════════════════════════════════════════════════════
-🔧 FIX AUTOMATIC DEPLOYMENT (Choose ONE method):
-════════════════════════════════════════════════════════════
-
-METHOD 1: Enable SSH Access (Quick Fix)
-────────────────────────────────────────
-Your Jenkins IPv4: ${ipv4 ?: 'Run: curl -4 ifconfig.me'}
-
-Steps:
-1. Go to AWS Console → EC2 → Instance (${EC2_HOST})
-2. Security Tab → Click Security Group
-3. Edit Inbound Rules → Add Rule:
-   - Type: SSH
-   - Port: 22
-   - Source: ${ipv4 ?: 'YOUR_IPV4'}/32
-   - Description: Jenkins Server SSH
-4. Save rules
-5. Re-run Jenkins pipeline
-
-────────────────────────────────────────
-METHOD 2: Use AWS Systems Manager (Recommended)
-────────────────────────────────────────
-SSM allows remote commands WITHOUT opening SSH ports!
-
-On your EC2 instance:
-1. Install SSM Agent (usually pre-installed on Amazon Linux 2):
-   sudo yum install -y amazon-ssm-agent
-   sudo systemctl enable amazon-ssm-agent
-   sudo systemctl start amazon-ssm-agent
-
-2. Attach IAM Role to EC2:
-   - Go to AWS Console → EC2 → Instance
-   - Actions → Security → Modify IAM Role
-   - Create/attach role with policy: AmazonSSMManagedInstanceCore
-
-3. Wait 5-10 minutes for EC2 to register with SSM
-
-4. Verify: AWS Console → Systems Manager → Fleet Manager
-   (Your instance should appear)
-
-5. Re-run Jenkins pipeline
-
-════════════════════════════════════════════════════════════
 """
-            }
         }
-        
         always {
             echo '🧹 Cleaning up workspace...'
-            bat '@echo off & if exist deploy*.sh del /f /q deploy*.sh 2>nul'
         }
     }
 }
